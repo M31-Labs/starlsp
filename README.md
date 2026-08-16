@@ -177,7 +177,7 @@ two dialects pay and the others do not.
 
 ```console
 $ starlsp --dialect bazel --probe
-starlsp 0.2.0
+starlsp 0.2.1
 
 host           starlark+bazel
 parser         starlark (gotreesitter, pure Go)

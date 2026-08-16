@@ -2,7 +2,7 @@
   "name": "starlsp",
   "displayName": "Starlark (starlsp)",
   "description": "Starlark language support for Bazel, Tilt, and plain Starlark, powered by the starlsp language server.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "m31labs",
   "license": "Apache-2.0",
   "repository": {

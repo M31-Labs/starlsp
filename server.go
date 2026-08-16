@@ -15,7 +15,7 @@ import (
 )
 
 // Version is reported to the client at initialize.
-const Version = "0.2.0"
+const Version = "0.2.1"
 
 // Options configures a server.
 type Options struct {
