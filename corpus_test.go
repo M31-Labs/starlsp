@@ -105,13 +105,16 @@ func TestCorpusSurvivesEveryFile(t *testing.T) {
 	t.Logf("opened %d files, largest %d bytes, %d produced diagnostics", opened, largest, withDiag)
 }
 
-// TestCorpusProducesNoFalseSyntaxErrors is the sharp one. Every file in a
-// released Bazel or Tilt repository parses for the tool that consumes it, so
-// any syntax error the server reports on one is the server's bug.
+// TestCorpusProducesNoFalseSyntaxErrors checks the specification host against
+// files that are specification Starlark.
 //
-// Semantic diagnostics are a different matter and are excluded: a BUILD file
-// legitimately calls names that only Bazel predeclares, and the vanilla host
-// does not know them. That is what a dialect host is for.
+// Two exclusions, both principled:
+//
+//   - Semantic diagnostics. A BUILD file legitimately calls names only Bazel
+//     predeclares, and the specification host does not know them.
+//   - Tiltfiles. Tilt permits top-level control flow, so the specification host
+//     is *correct* to reject them and reporting that is not a defect. The
+//     dialect-aware gate in corpus_dialect_test.go is what covers those.
 func TestCorpusProducesNoFalseSyntaxErrors(t *testing.T) {
 	root := corpusRoot(t)
 	files := corpusFiles(t, root)
@@ -124,14 +127,17 @@ func TestCorpusProducesNoFalseSyntaxErrors(t *testing.T) {
 	var failures []failure
 
 	for _, path := range files {
+		if filepath.Base(path) == "Tiltfile" {
+			continue // a different dialect; see the doc comment
+		}
 		source, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
 		uri := pathToURI(path)
 		for _, d := range s.open(uri, string(source)) {
-			// Undefined-name reports are expected: the vanilla host does not
-			// predeclare Bazel's or Tilt's builtins.
+			// Undefined-name reports are expected: the specification host does
+			// not predeclare Bazel's builtins.
 			if strings.Contains(d.Message, "undefined") {
 				continue
 			}
