@@ -26,6 +26,38 @@ jobs:
       # passing, or the size claim in the README quietly stops being true.
       - run: go test -tags 'grammar_subset,grammar_subset_starlark' ./...
 
+  realworld:
+    # The corpus gate. Every file in a released Bazel or Tilt repository parses
+    # for the tool that consumes it, so a diagnostic here is this server's bug.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Fetch real Starlark
+        run: |
+          mkdir -p /tmp/corpus
+          git clone --depth 1 https://github.com/bazelbuild/rules_go /tmp/corpus/rules_go
+          git clone --depth 1 https://github.com/bazelbuild/bazel-skylib /tmp/corpus/bazel-skylib
+          git clone --depth 1 https://github.com/tilt-dev/tilt /tmp/corpus/tilt
+      - name: Survive, and report nothing false
+        env:
+          GTS_STARLARK_CORPUS: /tmp/corpus
+        run: go test -run TestCorpus -timeout 900s ./...
+      - name: Zero errors under the matching dialect
+        run: |
+          go build -o /tmp/starlsp ./cmd/starlsp
+          bazel_errors=$(find /tmp/corpus \( -name '*.bzl' -o -name BUILD -o -name BUILD.bazel -o -name WORKSPACE \) -type f -print0 \
+            | xargs -0 /tmp/starlsp --dialect bazel --check 2>/dev/null | grep -c ': error:' || true)
+          tilt_errors=$(find /tmp/corpus -name Tiltfile -type f -print0 \
+            | xargs -0 /tmp/starlsp --dialect tilt --check 2>/dev/null | grep -c ': error:' || true)
+          echo "bazel: $bazel_errors errors, tilt: $tilt_errors errors"
+          if [ "$bazel_errors" -ne 0 ] || [ "$tilt_errors" -ne 0 ]; then
+            echo "::error::the server reports errors on real-world Starlark"
+            exit 1
+          fi
+
   crosscompile:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,46 @@
+# Prebuilt binaries, so installing does not require a Go toolchain.
+# The grammar_subset tags embed only the Starlark grammar: 31.6 MB -> 12.9 MB.
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: starlsp
+    main: ./cmd/starlsp
+    binary: starlsp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -tags=grammar_subset,grammar_subset_starlark
+    ldflags:
+      - -s -w
+    goos: [linux, darwin, windows, freebsd]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "starlsp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+release:
+  footer: |
+    ## Install
+
+    ```bash
+    go install github.com/M31-Labs/starlsp/cmd/starlsp@{{ .Tag }}
+    ```
+
+    Or download a binary above — no Go toolchain needed.

@@ -75,7 +75,8 @@ func (s *Server) analyze(d *Document) analysis {
 func (s *Server) analyzeUncached(d *Document) analysis {
 	out := analysis{Refs: newReferenceIndex()}
 
-	file, err := syntax.Parse(d.filename(), d.text, syntax.RetainComments)
+	opts := s.fileOptions()
+	file, err := opts.Parse(d.filename(), d.text, syntax.RetainComments)
 	if err != nil {
 		out.Diagnostics = s.syntaxDiagnostics(d, err)
 		return out
@@ -90,6 +91,8 @@ func (s *Server) analyzeUncached(d *Document) analysis {
 	}
 	isUniversal := func(name string) bool { return universeNames[name] }
 
+	// The resolver reads its dialect from the file's own options, which the
+	// parse above attached.
 	if err := resolve.File(file, isPredeclared, isUniversal); err != nil {
 		out.Diagnostics = append(out.Diagnostics, s.resolveDiagnostics(d, err)...)
 	}
@@ -298,3 +301,14 @@ var universeNames = func() map[string]bool {
 	}
 	return out
 }()
+
+// fileOptions returns the dialect the configured host asks for, or the
+// specification defaults when it asks for nothing.
+func (s *Server) fileOptions() *syntax.FileOptions {
+	if s.caps.dialect != nil {
+		if opts := s.caps.dialect.FileOptions(); opts != nil {
+			return opts
+		}
+	}
+	return SpecFileOptions()
+}

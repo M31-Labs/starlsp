@@ -1,33 +1,75 @@
 # starlsp
 
 A language server for [Starlark](https://github.com/bazelbuild/starlark), written in pure Go.
-
-Starlark has no single dialect. Bazel, Buck, Tilt, and Starkite each add their own
-builtins, their own meaning for `load()`, and their own rules. `starlsp` knows the
-language specification and nothing else. A dialect supplies the rest through one
-small interface, so every host gets the same editor features without writing a
-language server.
+No cgo, no C toolchain, no build tags — `go install` and it works.
 
 ```bash
 go install github.com/M31-Labs/starlsp/cmd/starlsp@latest
-starlsp --probe
 ```
 
-The parser library carries more than 200 grammars. Build with the subset tag to
-embed only the one this server needs:
+Starlark has no single dialect. Bazel, Buck, Tilt, and Starkite each add their own
+builtins, their own meaning for `load()`, and their own rules about what a
+well-formed file even is. `starlsp` knows the language specification; a dialect
+supplies the rest through one small interface. **Bazel and Tilt ship in the box.**
 
 ```bash
-go build -tags 'grammar_subset,grammar_subset_starlark' ./cmd/starlsp
+starlsp --dialect bazel      # BUILD, BUILD.bazel, WORKSPACE, MODULE.bazel, .bzl
+starlsp --dialect tilt       # Tiltfile
+starlsp                      # auto-detects from the working directory
 ```
 
-That takes the binary from 31.6 MB to **12.9 MB**, with no change in behaviour —
-the test suite passes under both.
+## It is quiet on real code
+
+The measurement that matters for a language server is how often it is wrong about
+working code. Against 461 files from `bazelbuild/rules_go`,
+`bazelbuild/bazel-skylib`, and `tilt-dev/tilt`:
+
+| Corpus | Files | Errors, spec host | Errors, dialect host |
+|---|--:|--:|--:|
+| Bazel `.bzl` / `BUILD` / `WORKSPACE` | 426 | 1,275 | **0** |
+| Tiltfiles | 35 | 195 | **0** |
+
+Zero. Not "few" — every file that Bazel and Tilt accept, `starlsp` accepts.
+
+Two things that number depends on, both of which are easy to get wrong:
+
+- **Tilt permits top-level `if` and `for`.** Bazel does not. A server that hard-codes
+  the specification reports a syntax error on real Tiltfiles. Dialects carry
+  `syntax.FileOptions`, so the parser and resolver enforce the variant the host
+  actually runs.
+- **The builtin sets were checked against real code**, not just documentation. Every
+  name those three repositories reference is present.
+
+Robustness is measured the same way: **21,740 positional requests** — hover,
+completion, signature help, definition, highlight — driven at a stride across 60
+real files, with no crash. Plus out-of-range positions, negative lines, and
+requests for documents that were never opened.
+
+## Also a linter
+
+The server without the protocol. Same parser, same resolver, same host — so a file
+clean in CI is clean in the editor, and neither can drift from the other.
+
+```console
+$ starlsp --dialect tilt --check Tiltfile
+$ echo $?
+0
+
+$ starlsp --dialect starlark --check Tiltfile
+Tiltfile:5:1: error: if statement not within a function
+Tiltfile:6:3: error: undefined: k8s_yaml
+$ echo $?
+1
+```
+
+Embeddable too — `Server.Diagnose(uri, text)` and `Server.DiagnoseFile(path)` need
+no client and no transport.
 
 ## Why another one
 
 [`tilt-dev/starlark-lsp`](https://github.com/tilt-dev/starlark-lsp) came first and
-proved the idea. It is worth reading. These are the reasons it did not become the
-foundation for this one, each of them checkable:
+proved the idea. It is worth reading, and this project owes it. The reasons it did
+not become the foundation are specific and checkable:
 
 | | tilt-dev/starlark-lsp | starlsp |
 |---|---|---|
@@ -37,56 +79,42 @@ foundation for this one, each of them checkable:
 | Builtin names | Python stub files, maintained by hand | **introspected** from `starlark.Universe` |
 | Type methods | stub files | **introspected** from the runtime values |
 | Dialect extension | stub files | a typed `Host` interface |
+| Dialect *rules* | fixed | `syntax.FileOptions` per host |
 | Last code commit | July 2024 | — |
-| Protocol types | `go.lsp.dev/protocol` v0.11.2 | no protocol dependency |
 
-Capabilities, counted from what each server advertises at `initialize`:
+Capabilities, counted from what each advertises at `initialize`:
 
-| Capability | tilt-dev | starlsp |
+| | tilt-dev | starlsp |
 |---|:--:|:--:|
-| Diagnostics | ● | ● |
-| Completion | ● | ● |
-| Hover | ● | ● |
-| Signature help | ● | ● |
-| Go to definition | ● | ● |
-| Document symbols | ● | ● |
-| **Find references** | ○ | ● |
-| **Document highlight** | ○ | ● |
-| **Rename**, with prepare | ○ | ● |
-| **Workspace symbols** | ○ | ● |
-| **Folding ranges** | ○ | ● |
-| **Selection ranges** | ○ | ● |
-| **Document links** | ○ | ● |
-| **Semantic tokens** | ○ | ● |
+| Diagnostics · completion · hover · signature help · definition · document symbols | ● | ● |
+| **References · document highlight · rename (+prepare) · workspace symbols** | ○ | ● |
+| **Folding · selection ranges · document links · semantic tokens** | ○ | ● |
 
-Six capabilities become fourteen. The new ones are grouped around a reference
-index the resolver does not keep: `go.starlark.net/resolve` establishes which
-identifiers bind to which variable, then discards the back-references. Building
-that index is what makes find-references, rename, and highlight exact — a local
-`x` in one function is not the same variable as a local `x` in another, and
-matching by text would merge them.
+Six become fourteen. The new ones hang off a **reference index** the resolver does
+not keep: `go.starlark.net/resolve` establishes which identifiers bind to which
+variable, then discards the back-references. Rebuilding that is what makes rename
+exact — a local `x` in one function is not the same variable as a local `x` in
+another, and matching by text merges them.
 
 ## Two parsers, one opinion
 
-The server runs two parsers because they answer different questions.
-
 **gotreesitter** answers structural questions on every keystroke. It tolerates a
-half-typed buffer, which is exactly when an editor is most useful. It supplies the
-outline, folding, semantic tokens, and the caret context that completion needs.
+half-typed buffer, which is exactly when an editor is most useful — outline,
+folding, semantic tokens, and the caret context completion needs.
 
-**go.starlark.net** answers every question about correctness, because it is the
-same parser and resolver a Starlark host actually runs. Diagnostics, name
-binding, and scope come from there and nowhere else.
+**go.starlark.net** answers every question about correctness, because it is the same
+parser and resolver a Starlark host runs. Diagnostics, binding, and scope come from
+there and nowhere else.
 
-The division matters. A language server that reimplements Starlark's scope rules
-eventually disagrees with the runtime, and the disagreement is always the
-server's fault. Here it cannot happen: the core never gets a vote on whether a
-file is correct, only on what shape it currently has.
+A language server that reimplements Starlark's scope rules eventually disagrees
+with the runtime, and the disagreement is always the server's fault. Here it cannot
+happen: the core never gets a vote on whether a file is correct, only on what shape
+it currently has.
 
 ## Extending it for a dialect
 
-Two methods are required. Everything else is an optional interface, checked with
-a type assertion, so a host implements only what it has.
+Two methods are required. Everything else is an optional interface, found by type
+assertion, so a host implements only what it has.
 
 ```go
 type myDialect struct{}
@@ -104,86 +132,79 @@ func (myDialect) Globals() []starlsp.Symbol {
 }
 
 func main() {
-	srv, err := starlsp.New(starlsp.Options{
+	srv, _ := starlsp.New(starlsp.Options{
 		Host: starlsp.Hosts(starlsp.NewVanilla(), myDialect{}),
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
 	log.Fatal(srv.Run())
 }
 ```
 
-That alone gives `greet` completion, hover with its signature, signature help
-with its parameter, correct semantic-token colour, and — because the resolver is
-told the name exists — no false "undefined" diagnostic.
+That alone gives `greet` completion, hover with its signature, signature help with
+its parameter, the right semantic-token colour, and — because the resolver is told
+the name exists — no false "undefined" diagnostic.
 
-The optional interfaces:
-
-| Interface | Adds |
+| Optional interface | Adds |
 |---|---|
 | `MemberProvider` | completion after a dot |
 | `TypeResolver` | what `p` is, after `p = fs.path(...)` |
 | `LoadResolver` | go to definition across `load()` |
 | `Linter` | diagnostics belonging to the dialect |
 | `Documenter` | prose and signatures held elsewhere |
+| `DialectOptions` | `syntax.FileOptions` — top-level control flow, `while`, `set` |
 
-`Hosts(a, b, …)` composes hosts. Later hosts win on a name collision, so a
-dialect layers over the specification without either knowing about the other.
+`Hosts(a, b, …)` composes them; later hosts win a name collision.
 
-### A note on introspection
+Real example: [Starkite](https://github.com/project-starkite/starkite) implements six
+of these in ~1,200 lines and gets the whole server.
 
-Prefer introspecting your runtime over writing a table. The vanilla host does:
-its globals come from `starlark.Universe` and its methods from calling
-`AttrNames` on a zero `String`, `List`, `Dict`, `Set`, and `Bytes`. A build of
-`go.starlark.net` that adds a method gains completion for it with no change here.
+### Prefer introspection over tables
 
-A hand-written table tracking a moving API rots. The only hand-written data in
-this package is prose for the Starlark specification, which is frozen.
+The vanilla host reads its globals from `starlark.Universe` and its methods from
+calling `AttrNames` on a zero `String`, `List`, `Dict`, `Set`, and `Bytes`. A
+`go.starlark.net` release that adds a method gains completion for it with no change
+here. Starkite reads its surface from a live module registry the same way.
+
+The Bazel and Tilt hosts *cannot* do this — neither is a Go library — so they carry
+curated tables, and say so. A table tracking a moving API rots; that is a cost those
+two dialects pay and the others do not.
 
 ## Checking a build
 
-`--probe` prints what the server would offer and exits, so a missing completion
-can be diagnosed without an editor.
-
 ```console
-$ starlsp --probe
-starlsp 0.1.0
+$ starlsp --dialect bazel --probe
+starlsp 0.2.0
 
-host           starlark
+host           starlark+bazel
 parser         starlark (gotreesitter, pure Go)
-globals        49
+globals        125
 hooks          members, types
 
-types       10  bool bytes dict float int list range set str tuple
-functions   20  abs all any chr dir enumerate fail getattr hasattr hash len max min ord print repr reversed sorted type zip
-constants    3  False None True
-keywords    16  and break continue def elif else for if in lambda load not or pass return while
+namespaces  12  apple_common attr cc_common config config_common coverage_common
+                java_common json native platform_common proto testing
+types       30  CcInfo DefaultInfo JavaInfo OutputGroupInfo ProtoInfo PyInfo …
+functions   65  Label aspect bazel_dep depset exec_group glob module provider
+                rule select struct transition …
 
 members
-  bytes            1
-  dict             9
-  list             7
-  set             12
-  string          35
+  attr             13
+  native            9
+  string           35
 ```
 
-## Editor setup
-
-### VS Code
-
-Any generic LSP client works. With `vscode-languageclient`, run `starlsp` with no
-arguments over stdio.
+## Editors
 
 ### Neovim
 
 ```lua
-vim.filetype.add({ extension = { star = "starlark", bzl = "starlark" } })
+vim.filetype.add({
+  extension = { star = "starlark", bzl = "starlark" },
+  filename = { BUILD = "starlark", ["BUILD.bazel"] = "starlark", Tiltfile = "starlark" },
+})
 
 vim.lsp.config.starlsp = {
   cmd = { "starlsp" },
   filetypes = { "starlark" },
-  root_markers = { ".git" },
+  root_markers = { "WORKSPACE", "MODULE.bazel", "Tiltfile", ".git" },
 }
 vim.lsp.enable("starlsp")
 ```
@@ -197,7 +218,7 @@ command = "starlsp"
 [[language]]
 name = "starlark"
 scope = "source.star"
-file-types = ["star", "bzl", "sky"]
+file-types = ["star", "bzl", "sky", { glob = "BUILD" }, { glob = "BUILD.bazel" }, { glob = "Tiltfile" }]
 comment-token = "#"
 indent = { tab-width = 4, unit = "    " }
 language-servers = ["starlsp"]
@@ -206,17 +227,30 @@ language-servers = ["starlsp"]
 ### Zed
 
 ```json
-{
-  "lsp": { "starlsp": { "binary": { "path": "starlsp" } } }
-}
+{ "lsp": { "starlsp": { "binary": { "path": "starlsp" } } } }
 ```
+
+### VS Code
+
+Any generic LSP client works; run `starlsp` over stdio. A dedicated extension is
+not published yet — [#1](https://github.com/M31-Labs/starlsp/issues) if you want one.
+
+## Smaller binaries
+
+The parser library carries more than 200 grammars. Embed only the one this needs:
+
+```bash
+go build -tags 'grammar_subset,grammar_subset_starlark' ./cmd/starlsp
+```
+
+31.6 MB → **12.9 MB**, no behaviour change. CI runs the test suite under both.
 
 ## Status
 
-Version 0.1.0. The protocol surface and the `Host` interface are settled enough to
-build against; both may still change before 1.0. Issues and dialect hosts are
-welcome.
+v0.2.0. The `Host` interface is settled enough to build against; it may still
+change before 1.0. Dialect hosts for Buck, Isopod, Copybara, or anything else are
+very welcome — they are a table and two methods.
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0.

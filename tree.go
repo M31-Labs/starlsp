@@ -268,7 +268,6 @@ func (s *Server) structuralDiagnostics(d *Document) []Diagnostic {
 		})
 	}
 
-	out = append(out, s.specLints(d)...)
 	return out
 }
 
@@ -359,38 +358,4 @@ func stringLiteralText(d *Document, n *gotreesitter.Node, lang *gotreesitter.Lan
 	}
 	// A grammar that does not split the literal leaves the quotes on.
 	return strings.Trim(d.nodeText(n), `"'`)
-}
-
-// specLints reports what the Starlark specification forbids and the tree can
-// see without a successful parse.
-//
-// These belong to the language, not to a dialect. A host adds its own through
-// the Linter interface.
-func (s *Server) specLints(d *Document) []Diagnostic {
-	if d.tree == nil {
-		return nil
-	}
-	root := d.tree.RootNode()
-	if root == nil || root.Type(s.lang) != ntModule {
-		return nil
-	}
-	var out []Diagnostic
-	for i := 0; i < root.NamedChildCount(); i++ {
-		stmt := root.NamedChild(i)
-		if stmt == nil {
-			continue
-		}
-		switch stmt.Type(s.lang) {
-		case ntIfStmt, ntForStmt, ntWhileStmt:
-			keyword := strings.TrimSuffix(stmt.Type(s.lang), "_statement")
-			out = append(out, Diagnostic{
-				Range:    d.nodeRange(stmt),
-				Severity: severityError,
-				Source:   sourceStarlark,
-				Message: "Starlark allows a " + keyword +
-					" statement only inside a function body",
-			})
-		}
-	}
-	return out
 }

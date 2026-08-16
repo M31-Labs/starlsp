@@ -15,7 +15,7 @@ import (
 )
 
 // Version is reported to the client at initialize.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Options configures a server.
 type Options struct {
@@ -377,7 +377,6 @@ func (s *Server) diagnosticsFor(d *Document) []Diagnostic {
 			}
 		}
 	}
-	out = append(out, s.specLints(d)...)
 	if s.caps.linter != nil {
 		out = append(out, s.caps.linter.Lint(d, a.File)...)
 	}
@@ -499,4 +498,36 @@ func kindLabel(k Kind) string {
 	default:
 		return "variables"
 	}
+}
+
+// Diagnose analyses one document and returns its diagnostics, with no client
+// and no transport.
+//
+// It is the whole server minus the protocol: the same parse, the same
+// resolver, the same host lints an editor would see. That makes it usable as a
+// linter — in CI, in a pre-commit hook, or in a program that embeds this
+// package — without pretending to be an editor.
+//
+// uri may be a file:// URI or a plain path. It is used for error messages and
+// for any host hook that resolves relative to the file.
+func (s *Server) Diagnose(uri, text string) []Diagnostic {
+	if !strings.HasPrefix(uri, "file://") && strings.HasPrefix(uri, "/") {
+		uri = pathToURI(uri)
+	}
+	d := s.docs.open(uri, 1, text)
+	defer s.docs.close(uri)
+	out := s.diagnosticsFor(d)
+	if out == nil {
+		return []Diagnostic{}
+	}
+	return out
+}
+
+// DiagnoseFile reads a file from disk and analyses it.
+func (s *Server) DiagnoseFile(path string) ([]Diagnostic, error) {
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.Diagnose(pathToURI(path), string(source)), nil
 }

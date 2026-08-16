@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"go.starlark.net/syntax"
 )
 
 // hostFor is the host the session harness uses. It layers a small fake dialect
@@ -543,18 +545,48 @@ func TestHostNamesAreNotReportedAsUndefined(t *testing.T) {
 }
 
 func TestControlFlowOutsideAFunctionIsReported(t *testing.T) {
+	// Under the specification dialect this is an error, and the message comes
+	// from the resolver rather than from anything this package writes.
 	s := newSession(t)
 	diags := s.open("file:///tmp/starlsp-test/toplevel.star", "x = 1\nif x:\n    print(1)\n")
 
-	var found bool
+	var found int
 	for _, d := range diags {
-		if strings.Contains(d.Message, "only inside a function body") {
-			found = true
+		if strings.Contains(d.Message, "not within a function") {
+			found++
 		}
 	}
-	if !found {
+	if found == 0 {
 		t.Errorf("a top-level if produced no diagnostic: %+v", diags)
 	}
+	if found > 1 {
+		t.Errorf("a top-level if was reported %d times; the server is double-reporting", found)
+	}
+}
+
+func TestTopLevelControlIsAllowedWhenTheDialectSaysSo(t *testing.T) {
+	// Tilt permits if and for at the top level. A server that reports an error
+	// on a file the runtime accepts is worse than one that reports nothing.
+	srv, err := New(Options{Host: Hosts(NewVanilla(), &permissiveHost{})})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d := srv.docs.open("file:///tmp/starlsp-test/permissive.star", 1, "x = 1\nif x:\n    print(1)\n")
+
+	for _, diag := range srv.diagnosticsFor(d) {
+		if strings.Contains(diag.Message, "not within a function") {
+			t.Errorf("top-level control reported despite the dialect allowing it: %s", diag.Message)
+		}
+	}
+}
+
+// permissiveHost enables the options a Tilt-like dialect needs.
+type permissiveHost struct{}
+
+func (*permissiveHost) Name() string      { return "permissive" }
+func (*permissiveHost) Globals() []Symbol { return nil }
+func (*permissiveHost) FileOptions() *syntax.FileOptions {
+	return &syntax.FileOptions{TopLevelControl: true, While: true, GlobalReassign: true}
 }
 
 func TestCleanFileHasNoErrors(t *testing.T) {

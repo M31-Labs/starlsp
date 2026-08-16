@@ -111,6 +111,7 @@ type hostCapabilities struct {
 	loads   LoadResolver
 	linter  Linter
 	docs    Documenter
+	dialect DialectOptions
 }
 
 func capabilitiesOf(h Host) hostCapabilities {
@@ -120,6 +121,7 @@ func capabilitiesOf(h Host) hostCapabilities {
 	c.loads, _ = h.(LoadResolver)
 	c.linter, _ = h.(Linter)
 	c.docs, _ = h.(Documenter)
+	c.dialect, _ = h.(DialectOptions)
 	return c
 }
 
@@ -200,6 +202,17 @@ func (c composite) Lint(doc *Document, file *syntax.File) []Diagnostic {
 	return out
 }
 
+func (c composite) FileOptions() *syntax.FileOptions {
+	for i := len(c) - 1; i >= 0; i-- {
+		if d, ok := c[i].(DialectOptions); ok {
+			if opts := d.FileOptions(); opts != nil {
+				return opts
+			}
+		}
+	}
+	return nil
+}
+
 func (c composite) Document(owner, name string) (Symbol, bool) {
 	for i := len(c) - 1; i >= 0; i-- {
 		if d, ok := c[i].(Documenter); ok {
@@ -218,6 +231,7 @@ var (
 	_ LoadResolver   = composite(nil)
 	_ Linter         = composite(nil)
 	_ Documenter     = composite(nil)
+	_ DialectOptions = composite(nil)
 )
 
 func joinNonEmpty(parts []string, sep string) string {
@@ -232,4 +246,25 @@ func joinNonEmpty(parts []string, sep string) string {
 		out += p
 	}
 	return out
+}
+
+// A DialectOptions host controls the language variant the parser and resolver
+// enforce.
+//
+// Starlark is not one language here either. go.starlark.net gates several
+// behaviours behind syntax.FileOptions, and real dialects differ on them:
+// Tilt permits if and for at the top level, Bazel does not; some hosts enable
+// the set builtin, most do not. Getting this wrong produces a syntax error on
+// a file that its own runtime accepts, which is the worst failure a language
+// server has.
+//
+// A host that does not implement this gets the specification defaults.
+type DialectOptions interface {
+	FileOptions() *syntax.FileOptions
+}
+
+// SpecFileOptions is the Starlark specification's own dialect: no top-level
+// control flow, no while, no set, no global reassignment.
+func SpecFileOptions() *syntax.FileOptions {
+	return &syntax.FileOptions{}
 }
