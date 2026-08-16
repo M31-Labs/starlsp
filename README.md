@@ -263,13 +263,19 @@ language-servers = ["starlsp"]
 ### VS Code
 
 An extension lives in [`editors/vscode`](editors/vscode). Until it is on the
-Marketplace, build and install it:
+Marketplace, one command builds and installs both halves:
 
 ```bash
-cd editors/vscode
-npm install && npm run package
-code --install-extension starlsp-*.vsix
+make install
 ```
+
+That installs the server with `go install` and the extension into VS Code, then
+verifies the editor actually reports it. `make help` lists the rest.
+
+> **On WSL**, `code` is a shim onto the Windows build, and installing a vsix over
+> the `\\wsl.localhost` share fails intermittently with `code: 'Extract'`. The
+> install script stages the archive on Windows-native storage to avoid that share,
+> retries, and confirms the result. Nothing to do by hand.
 
 It contributes the `starlark` language for `.star`, `.bzl`, `.sky`, `BUILD`,
 `BUILD.bazel`, `WORKSPACE`, `MODULE.bazel`, and `Tiltfile`, and starts the server
