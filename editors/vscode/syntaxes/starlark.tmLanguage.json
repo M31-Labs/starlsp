@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Starlark",
+  "scopeName": "source.starlark",
+  "comment": "A deliberately small grammar. It colours a file before the server attaches and while the server is starting; once semantic tokens arrive they take precedence and carry the real distinctions, such as which names the dialect predeclares.",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#constant" },
+    { "include": "#definition" },
+    { "include": "#call" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.starlark"
+    },
+    "string": {
+      "patterns": [
+        { "begin": "\"\"\"", "end": "\"\"\"", "name": "string.quoted.triple.starlark" },
+        { "begin": "'''", "end": "'''", "name": "string.quoted.triple.starlark" },
+        {
+          "begin": "\"", "end": "\"", "name": "string.quoted.double.starlark",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.starlark" }]
+        },
+        {
+          "begin": "'", "end": "'", "name": "string.quoted.single.starlark",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.starlark" }]
+        }
+      ]
+    },
+    "number": {
+      "match": "\\b(0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+|[0-9]+(\\.[0-9]*)?([eE][+-]?[0-9]+)?)\\b",
+      "name": "constant.numeric.starlark"
+    },
+    "keyword": {
+      "patterns": [
+        { "match": "\\b(def|lambda|return|pass|break|continue)\\b", "name": "keyword.control.starlark" },
+        { "match": "\\b(if|elif|else|for|while|in)\\b", "name": "keyword.control.conditional.starlark" },
+        { "match": "\\b(and|or|not)\\b", "name": "keyword.operator.logical.starlark" },
+        { "match": "\\b(load)\\b", "name": "keyword.control.import.starlark" }
+      ]
+    },
+    "constant": {
+      "match": "\\b(True|False|None)\\b",
+      "name": "constant.language.starlark"
+    },
+    "definition": {
+      "match": "\\b(def)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.starlark" },
+        "2": { "name": "entity.name.function.starlark" }
+      }
+    },
+    "call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "name": "entity.name.function.call.starlark"
+    }
+  }
+}

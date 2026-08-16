@@ -72,3 +72,37 @@ jobs:
               go build -o /dev/null ./cmd/starlsp || exit 1
             echo "built $target"
           done
+
+  vscode-extension:
+    # The extension is verified two ways, because they catch different things.
+    #
+    # The protocol suite drives the server with Microsoft's own LSP client
+    # libraries — the layers VS Code's LanguageClient is built on.
+    #
+    # The bundle suite loads the packaged extension the way the editor loads it.
+    # That is what catches a missing dependency, which no protocol test can see
+    # and which shipped once already.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: go build -o /tmp/starlsp ./cmd/starlsp
+      - name: Install extension dependencies
+        working-directory: editors/vscode
+        run: npm ci || npm install
+      - name: Build the extension bundle
+        working-directory: editors/vscode
+        run: npm run build:prod
+      - name: Package it, as a user would receive it
+        working-directory: editors/vscode
+        run: npx --yes @vscode/vsce@latest package --allow-missing-repository
+      - name: Verify the bundle loads and the protocol works
+        working-directory: editors/vscode
+        env:
+          STARLSP_PATH: /tmp/starlsp
+        run: npm test

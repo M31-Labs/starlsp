@@ -1,0 +1,130 @@
+{
+  "name": "starlsp",
+  "displayName": "Starlark (starlsp)",
+  "description": "Starlark language support for Bazel, Tilt, and plain Starlark, powered by the starlsp language server.",
+  "version": "0.2.0",
+  "publisher": "m31labs",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/M31-Labs/starlsp.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "starlark",
+    "bazel",
+    "bzl",
+    "tilt",
+    "tiltfile"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:starlark"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "starlark",
+        "aliases": [
+          "Starlark",
+          "Bazel",
+          "Tiltfile"
+        ],
+        "extensions": [
+          ".star",
+          ".bzl",
+          ".sky"
+        ],
+        "filenames": [
+          "BUILD",
+          "BUILD.bazel",
+          "WORKSPACE",
+          "WORKSPACE.bazel",
+          "MODULE.bazel",
+          "Tiltfile"
+        ],
+        "firstLine": "^#!.*\\b(starlark|kite)\\b",
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "starlark",
+        "scopeName": "source.starlark",
+        "path": "./syntaxes/starlark.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Starlark",
+      "properties": {
+        "starlsp.serverPath": {
+          "type": "string",
+          "default": "starlsp",
+          "description": "Path to the starlsp binary. Install it with: go install github.com/M31-Labs/starlsp/cmd/starlsp@latest"
+        },
+        "starlsp.dialect": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "starlark",
+            "bazel",
+            "tilt"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Detect from workspace marker files",
+            "The Starlark specification only",
+            "Bazel: BUILD, WORKSPACE, MODULE.bazel, .bzl",
+            "Tilt: Tiltfile, permitting top-level if and for"
+          ],
+          "description": "Which Starlark dialect the server should enforce."
+        },
+        "starlsp.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log traffic between the editor and the language server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "starlsp.restart",
+        "title": "Starlark: Restart Language Server"
+      },
+      {
+        "command": "starlsp.showSurface",
+        "title": "Starlark: Show Server Surface"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "build:prod": "node esbuild.js --production",
+    "test": "node ./src/test/bundle.test.js && node ./src/test/protocol.test.js",
+    "package": "npm run build:prod && vsce package --allow-missing-repository",
+    "vscode:prepublish": "npm run build:prod",
+    "test:protocol": "node ./src/test/protocol.test.js",
+    "test:bundle": "node ./src/test/bundle.test.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.2",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.18.2"
+  }
+}

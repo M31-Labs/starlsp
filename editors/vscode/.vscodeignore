@@ -1,0 +1,9 @@
+src/**
+test-fixtures/**
+node_modules/**
+.vscode-test/**
+esbuild.js
+.gitignore
+*.vsix
+package-lock.json
+dist/**/*.map

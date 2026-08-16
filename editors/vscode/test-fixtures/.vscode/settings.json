@@ -1,0 +1,4 @@
+{
+  "starlsp.serverPath": "/tmp/starlsp-bin",
+  "starlsp.trace.server": "verbose"
+}

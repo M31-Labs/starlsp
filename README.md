@@ -45,6 +45,11 @@ completion, signature help, definition, highlight — driven at a stride across 
 real files, with no crash. Plus out-of-range positions, negative lines, and
 requests for documents that were never opened.
 
+The protocol is verified against **Microsoft's own LSP client libraries**
+(`vscode-languageserver-protocol`), the layers VS Code's `LanguageClient` is
+built on — not a hand-written harness that might agree with the server about
+what the protocol means. 18 end-to-end exchanges, run in CI.
+
 ## Also a linter
 
 The server without the protocol. Same parser, same resolver, same host — so a file
@@ -232,8 +237,27 @@ language-servers = ["starlsp"]
 
 ### VS Code
 
-Any generic LSP client works; run `starlsp` over stdio. A dedicated extension is
-not published yet — [#1](https://github.com/M31-Labs/starlsp/issues) if you want one.
+An extension lives in [`editors/vscode`](editors/vscode). Until it is on the
+Marketplace, build and install it:
+
+```bash
+cd editors/vscode
+npm install && npm run package
+code --install-extension starlsp-*.vsix
+```
+
+It contributes the `starlark` language for `.star`, `.bzl`, `.sky`, `BUILD`,
+`BUILD.bazel`, `WORKSPACE`, `MODULE.bazel`, and `Tiltfile`, and starts the server
+for them. Settings:
+
+| Setting | Default | |
+|---|---|---|
+| `starlsp.serverPath` | `starlsp` | path to the binary |
+| `starlsp.dialect` | `auto` | `starlark`, `bazel`, `tilt`, or `auto` |
+| `starlsp.trace.server` | `off` | log the traffic |
+
+`STARLSP_PATH` overrides `serverPath`, which is convenient when working on the
+server itself.
 
 ## Smaller binaries
 

@@ -1,0 +1,2 @@
+# Tilt permits top-level control flow, which the specification does not.
+config.define_bool("debug")
