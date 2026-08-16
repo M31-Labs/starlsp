@@ -9,6 +9,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"go.starlark.net/syntax"
+
 	gotreesitter "github.com/odvcencio/gotreesitter"
 )
 
@@ -310,3 +312,28 @@ func (s *documentStore) all() []*Document {
 	}
 	return out
 }
+
+// The accessors below are what a Host needs from a document. Everything else
+// about a Document is the server's business.
+
+// URI is the document's client-supplied identifier.
+func (d *Document) URI() string { return d.uri }
+
+// Path is the document's filesystem path, empty when the buffer is not on disk.
+func (d *Document) Path() string { return d.path }
+
+// Version is the client's version counter for this buffer.
+func (d *Document) Version() int { return d.version }
+
+// Text returns the buffer's current bytes. The slice must not be modified.
+func (d *Document) Text() []byte { return d.text }
+
+// SpanRange converts a Starlark syntax node's span into an LSP range, so a
+// host can report a diagnostic against a node it found in the AST.
+func (d *Document) SpanRange(n syntax.Node) Range { return d.spanRange(n) }
+
+// PositionOf converts a byte offset into an LSP position.
+func (d *Document) PositionOf(offset int) Position { return d.positionOf(offset) }
+
+// OffsetOf converts an LSP position into a byte offset.
+func (d *Document) OffsetOf(p Position) int { return d.offsetOf(p) }

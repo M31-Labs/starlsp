@@ -237,10 +237,19 @@ type documentLinkParams struct {
 
 type DiagnosticSeverity int
 
+// Severities a host may set on a Diagnostic it returns.
 const (
-	severityError   DiagnosticSeverity = 1
-	severityWarning DiagnosticSeverity = 2
-	severityHint    DiagnosticSeverity = 4
+	SeverityError       DiagnosticSeverity = 1
+	SeverityWarning     DiagnosticSeverity = 2
+	SeverityInformation DiagnosticSeverity = 3
+	SeverityHint        DiagnosticSeverity = 4
+)
+
+// Unexported aliases, used throughout the core.
+const (
+	severityError   = SeverityError
+	severityWarning = SeverityWarning
+	severityHint    = SeverityHint
 )
 
 type Diagnostic struct {
