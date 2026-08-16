@@ -50,6 +50,31 @@ The protocol is verified against **Microsoft's own LSP client libraries**
 built on — not a hand-written harness that might agree with the server about
 what the protocol means. 18 end-to-end exchanges, run in CI.
 
+## Built to survive a working day
+
+A language server runs for hours inside an editor, and the failures that matter
+there are not wrong answers:
+
+- **A panic cannot kill the session.** Every handler is recovered; the client gets
+  an error response and the server carries on. Hosts are written by other people,
+  so a host that panics is tested for explicitly.
+- **Slow work does not block typing.** Read-only requests run concurrently under a
+  bounded pool; only the notifications whose order is their meaning — didOpen,
+  didChange, didClose — are serialised.
+- **Cancellation is honoured.** `$/cancelRequest` stops work nobody is waiting
+  for, including a workspace scan mid-walk.
+- **The outline does not vanish while you type.** Typing the dot in `x = foo.`
+  degenerates the whole parse into one error node — exactly when you are asking
+  for completion — so navigation falls back to the last tree that had structure.
+  Highlighting deliberately does not, because stale token ranges colour the wrong
+  characters.
+- **The analysis cache is per document.** A single-entry cache is worse than none
+  once two files are open, since every switch evicts the other.
+
+Tested against adversarial input — nul bytes, invalid UTF-8, a 100,000-character
+line, 500-deep nesting, unterminated strings, CRLF, a BOM — and under `-race`
+with two dozen goroutines hammering the same documents.
+
 ## Also a linter
 
 The server without the protocol. Same parser, same resolver, same host — so a file

@@ -1,6 +1,7 @@
 package starlsp
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -416,7 +417,7 @@ func buildSelectionChain(ranges []Range) SelectionRange {
 // skips hidden and vendor directories, and stops after a fixed budget. A
 // language server that walks an unbounded tree on every keystroke is worse
 // than one that admits a limit.
-func (s *Server) handleWorkspaceSymbol(req request) error {
+func (s *Server) handleWorkspaceSymbol(ctx context.Context, req request) error {
 	var params workspaceSymbolParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return s.conn.replyError(req.ID, errInvalidParams, err.Error())
@@ -441,6 +442,10 @@ func (s *Server) handleWorkspaceSymbol(req request) error {
 	}
 
 	for _, path := range s.workspaceFiles() {
+		if checkCancelled(ctx) {
+			// The user typed again; this answer is already stale.
+			return s.conn.reply(req.ID, out)
+		}
 		uri := pathToURI(path)
 		if _, open := s.docs.get(uri); open {
 			continue // already covered above, with the buffer's live content

@@ -25,8 +25,12 @@ func newSession(t *testing.T) *session {
 	clientReader, serverWriter := io.Pipe()
 	serverReader, clientWriter := io.Pipe()
 
+	host := testHostOverride
+	if host == nil {
+		host = hostFor(t)
+	}
 	srv, err := New(Options{
-		Host: hostFor(t),
+		Host: host,
 		In:   serverReader,
 		Out:  serverWriter,
 		Log:  io.Discard,
@@ -167,3 +171,38 @@ func newBufferedReader(r io.Reader) *bufferedReader {
 }
 
 func (b *bufferedReader) readMessage() ([]byte, error) { return b.c.read() }
+
+// requestAllowingError sends a request and returns either its result or its
+// error object, instead of failing the test on an error reply.
+func (s *session) requestAllowingError(method string, params any) (json.RawMessage, *responseError) {
+	s.t.Helper()
+	id := s.nextID
+	s.nextID++
+
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": method, "params": params,
+	})
+	if err != nil {
+		s.t.Fatalf("marshal %s: %v", method, err)
+	}
+	s.send(body)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		msg := s.receive()
+		var envelope struct {
+			ID     *int            `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Error  *responseError  `json:"error"`
+		}
+		if err := json.Unmarshal(msg, &envelope); err != nil {
+			continue
+		}
+		if envelope.ID == nil || *envelope.ID != id {
+			continue
+		}
+		return envelope.Result, envelope.Error
+	}
+	s.t.Fatalf("timed out waiting for a reply to %s", method)
+	return nil, nil
+}

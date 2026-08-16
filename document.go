@@ -30,6 +30,19 @@ type Document struct {
 	lineStarts []int
 
 	tree *gotreesitter.Tree
+
+	// lastGood is the most recent parse that had usable structure.
+	//
+	// Some edits degenerate the whole parse: typing the dot in `x = foo.`
+	// yields a single ERROR node holding loose identifiers, with no
+	// function_definition anywhere. That is the exact moment a user is asking
+	// for completion, and an outline that empties itself mid-keystroke reads
+	// as the server crashing.
+	//
+	// Navigation features fall back to this tree. Highlighting deliberately
+	// does not: a stale outline entry is a small inaccuracy, but stale
+	// semantic-token ranges colour the wrong characters, which looks broken.
+	lastGood *gotreesitter.Tree
 }
 
 // documentStore is the set of open buffers. Every exported method is safe for
@@ -130,7 +143,46 @@ func (s *documentStore) reparse(d *Document) {
 		// the previous tree so structural features degrade rather than fail.
 		return
 	}
+	if hasUsableStructure(tree, s.lang) {
+		d.lastGood = tree
+	} else if d.tree != nil && d.lastGood == nil {
+		d.lastGood = d.tree
+	}
 	d.tree = tree
+}
+
+// hasUsableStructure reports whether a tree has at least one named top-level
+// node that is not an error, which is what an outline can be built from.
+func hasUsableStructure(tree *gotreesitter.Tree, lang *gotreesitter.Language) bool {
+	if tree == nil {
+		return false
+	}
+	root := tree.RootNode()
+	if root == nil {
+		return false
+	}
+	for i := 0; i < root.NamedChildCount(); i++ {
+		child := root.NamedChild(i)
+		if child != nil && !child.IsError() {
+			return true
+		}
+	}
+	return false
+}
+
+// structureTree returns the tree navigation features should read.
+//
+// It prefers the current parse and falls back to the last one that had usable
+// structure, so an outline does not empty itself while a member access is
+// half-typed.
+func (d *Document) structureTree(lang *gotreesitter.Language) *gotreesitter.Tree {
+	if hasUsableStructure(d.tree, lang) {
+		return d.tree
+	}
+	if d.lastGood != nil {
+		return d.lastGood
+	}
+	return d.tree
 }
 
 // indexLines recomputes the line offset table.

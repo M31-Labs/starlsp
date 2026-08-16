@@ -94,10 +94,11 @@ func nodeAt(root *gotreesitter.Node, offset int) *gotreesitter.Node {
 // documentSymbols builds the outline: every function definition, plus the
 // top-level bindings that make a Starkite script readable at a glance.
 func (s *Server) documentSymbols(d *Document) []DocumentSymbol {
-	if d.tree == nil {
+	tree := d.structureTree(s.lang)
+	if tree == nil {
 		return nil
 	}
-	root := d.tree.RootNode()
+	root := tree.RootNode()
 	if root == nil {
 		return nil
 	}
@@ -174,11 +175,12 @@ func (s *Server) assignmentSymbol(d *Document, assign *gotreesitter.Node) (Docum
 
 // foldingRanges folds every suite: function bodies, loops, and conditionals.
 func (s *Server) foldingRanges(d *Document) []FoldingRange {
-	if d.tree == nil {
+	tree := d.structureTree(s.lang)
+	if tree == nil {
 		return nil
 	}
 	var out []FoldingRange
-	walk(d.tree.RootNode(), func(n *gotreesitter.Node) bool {
+	walk(tree.RootNode(), func(n *gotreesitter.Node) bool {
 		switch n.Type(s.lang) {
 		case ntBlock:
 			start := int(n.StartPoint().Row)

@@ -1,6 +1,7 @@
 package starlsp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,8 +54,14 @@ type Server struct {
 
 	rootPath string
 
+	// resilience machinery; see dispatch.go
+	pending *inflight
+	slots   chan struct{}
+	active  sync.WaitGroup
+
 	mu       sync.Mutex
 	shutdown bool
+	exiting  bool
 }
 
 // New builds a server. It touches no transport until Run is called.
@@ -82,12 +89,14 @@ func New(opts Options) (*Server, error) {
 	}
 
 	return &Server{
-		opts: opts,
-		host: opts.Host,
-		caps: capabilitiesOf(opts.Host),
-		conn: newConn(opts.In, opts.Out),
-		docs: newDocumentStore(lang),
-		lang: lang,
+		opts:    opts,
+		host:    opts.Host,
+		caps:    capabilitiesOf(opts.Host),
+		conn:    newConn(opts.In, opts.Out),
+		docs:    newDocumentStore(lang),
+		lang:    lang,
+		pending: newInflight(),
+		slots:   make(chan struct{}, maxConcurrentRequests),
 	}, nil
 }
 
@@ -135,35 +144,11 @@ func (s *Server) logf(format string, args ...any) {
 	fmt.Fprintf(s.opts.Log, "starlsp: "+format+"\n", args...)
 }
 
-// Run serves the client until the stream closes or the client exits.
-func (s *Server) Run() error {
-	for {
-		body, err := s.conn.read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		var req request
-		if err := json.Unmarshal(body, &req); err != nil {
-			_ = s.conn.replyError(nil, errParse, err.Error())
-			continue
-		}
-		if err := s.dispatch(req); err != nil {
-			if errors.Is(err, errExit) {
-				return nil
-			}
-			s.logf("handling %s: %v", req.Method, err)
-		}
-	}
-}
-
 var errExit = errors.New("exit")
 
 func (r request) isNotification() bool { return len(r.ID) == 0 }
 
-func (s *Server) dispatch(req request) error {
+func (s *Server) dispatch(ctx context.Context, req request) error {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
@@ -176,6 +161,15 @@ func (s *Server) dispatch(req request) error {
 		return s.conn.reply(req.ID, nil)
 	case "exit":
 		return errExit
+	case "$/cancelRequest":
+		return s.handleCancel(req)
+	case "$/setTrace":
+		return nil
+	case "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles":
+		// A dialect host may resolve load() through files on disk, so drop any
+		// cached analysis and let the next request rebuild it.
+		s.analyses.invalidateAll()
+		return nil
 
 	case "textDocument/didOpen":
 		return s.handleDidOpen(req)
@@ -187,34 +181,34 @@ func (s *Server) dispatch(req request) error {
 		return s.handleDidClose(req)
 
 	case "textDocument/completion":
-		return s.positional(req, func(d *Document, p Position) any { return s.complete(d, p) })
+		return s.positional(ctx, req, func(d *Document, p Position) any { return s.complete(d, p) })
 	case "textDocument/hover":
-		return s.positional(req, func(d *Document, p Position) any { return orNil(s.hover(d, p)) })
+		return s.positional(ctx, req, func(d *Document, p Position) any { return orNil(s.hover(d, p)) })
 	case "textDocument/signatureHelp":
-		return s.positional(req, func(d *Document, p Position) any { return orNil(s.signatureHelp(d, p)) })
+		return s.positional(ctx, req, func(d *Document, p Position) any { return orNil(s.signatureHelp(d, p)) })
 	case "textDocument/definition":
-		return s.positional(req, func(d *Document, p Position) any { return s.definition(d, p) })
+		return s.positional(ctx, req, func(d *Document, p Position) any { return s.definition(d, p) })
 	case "textDocument/documentHighlight":
-		return s.positional(req, func(d *Document, p Position) any { return s.documentHighlight(d, p) })
+		return s.positional(ctx, req, func(d *Document, p Position) any { return s.documentHighlight(d, p) })
 	case "textDocument/references":
 		return s.handleReferences(req)
 	case "textDocument/prepareRename":
-		return s.positional(req, func(d *Document, p Position) any { return orNil(s.prepareRename(d, p)) })
+		return s.positional(ctx, req, func(d *Document, p Position) any { return orNil(s.prepareRename(d, p)) })
 	case "textDocument/rename":
 		return s.handleRename(req)
 	case "textDocument/selectionRange":
 		return s.handleSelectionRange(req)
 
 	case "textDocument/documentSymbol":
-		return s.perDocument(req, func(d *Document) any { return s.documentSymbols(d) })
+		return s.perDocument(ctx, req, func(d *Document) any { return s.documentSymbols(d) })
 	case "textDocument/foldingRange":
-		return s.perDocument(req, func(d *Document) any { return s.foldingRanges(d) })
+		return s.perDocument(ctx, req, func(d *Document) any { return s.foldingRanges(d) })
 	case "textDocument/documentLink":
-		return s.perDocument(req, func(d *Document) any { return s.documentLinks(d) })
+		return s.perDocument(ctx, req, func(d *Document) any { return s.documentLinks(d) })
 	case "textDocument/semanticTokens/full":
-		return s.perDocument(req, func(d *Document) any { return s.semanticTokensFor(d) })
+		return s.perDocument(ctx, req, func(d *Document) any { return s.semanticTokensFor(d) })
 	case "workspace/symbol":
-		return s.handleWorkspaceSymbol(req)
+		return s.handleWorkspaceSymbol(ctx, req)
 
 	default:
 		if req.isNotification() {
@@ -315,13 +309,14 @@ func (s *Server) handleDidClose(req request) error {
 		return err
 	}
 	s.docs.close(params.TextDocument.URI)
+	s.analyses.invalidate(params.TextDocument.URI)
 	return s.conn.notify("textDocument/publishDiagnostics", publishDiagnosticsParams{
 		URI:         params.TextDocument.URI,
 		Diagnostics: []Diagnostic{},
 	})
 }
 
-func (s *Server) positional(req request, fn func(*Document, Position) any) error {
+func (s *Server) positional(ctx context.Context, req request, fn func(*Document, Position) any) error {
 	var params textDocumentPositionParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return s.conn.replyError(req.ID, errInvalidParams, err.Error())
@@ -330,10 +325,13 @@ func (s *Server) positional(req request, fn func(*Document, Position) any) error
 	if !ok {
 		return s.conn.reply(req.ID, nil)
 	}
+	if checkCancelled(ctx) {
+		return s.conn.replyError(req.ID, errRequestCancelled, "cancelled")
+	}
 	return s.conn.reply(req.ID, fn(d, params.Position))
 }
 
-func (s *Server) perDocument(req request, fn func(*Document) any) error {
+func (s *Server) perDocument(ctx context.Context, req request, fn func(*Document) any) error {
 	var params documentSymbolParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return s.conn.replyError(req.ID, errInvalidParams, err.Error())
@@ -341,6 +339,9 @@ func (s *Server) perDocument(req request, fn func(*Document) any) error {
 	d, ok := s.docs.get(params.TextDocument.URI)
 	if !ok {
 		return s.conn.reply(req.ID, nil)
+	}
+	if checkCancelled(ctx) {
+		return s.conn.replyError(req.ID, errRequestCancelled, "cancelled")
 	}
 	return s.conn.reply(req.ID, fn(d))
 }

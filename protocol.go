@@ -519,3 +519,6 @@ type prepareRenameResult struct {
 	Range       Range  `json:"range"`
 	Placeholder string `json:"placeholder"`
 }
+
+// errRequestCancelled is the LSP code for a request the client withdrew.
+const errRequestCancelled = -32800

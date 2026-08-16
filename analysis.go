@@ -46,25 +46,70 @@ type referenceIndex struct {
 	unresolved map[string][]*syntax.Ident
 }
 
-// analysisCache memoizes one analysis per document version, because a single
-// keystroke can trigger diagnostics, semantic tokens, and a highlight request,
-// and parsing three times for one edit is waste the editor feels.
+// analysisCache memoizes the authoritative pass per document version.
+//
+// A single keystroke can trigger diagnostics, semantic tokens, a highlight and
+// a completion, and parsing four times for one edit is waste the user feels.
+//
+// It is keyed per document rather than holding one entry, because a
+// single-entry cache is worse than none once two files are open: every switch
+// between them evicts the other, so the common case — alternating between a
+// rule file and the BUILD file that uses it — would never hit.
 type analysisCache struct {
 	mu      sync.Mutex
-	uri     string
+	entries map[string]cachedAnalysis
+}
+
+type cachedAnalysis struct {
 	version int
 	result  analysis
 }
 
+// maxCachedAnalyses bounds the cache. Entries are evicted on didClose, so this
+// only matters if a client opens documents and never closes them; the cap
+// keeps that bounded rather than unbounded.
+const maxCachedAnalyses = 64
+
 func (c *analysisCache) get(d *Document, compute func() analysis) analysis {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.uri == d.uri && c.version == d.version && c.result.Refs != nil {
-		return c.result
+	if entry, ok := c.entries[d.uri]; ok && entry.version == d.version && entry.result.Refs != nil {
+		c.mu.Unlock()
+		return entry.result
 	}
-	c.result = compute()
-	c.uri, c.version = d.uri, d.version
-	return c.result
+	c.mu.Unlock()
+
+	// Computed outside the lock: parsing a large file must not block another
+	// document's lookup.
+	result := compute()
+
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = make(map[string]cachedAnalysis)
+	}
+	if len(c.entries) >= maxCachedAnalyses {
+		for k := range c.entries {
+			delete(c.entries, k)
+			break
+		}
+	}
+	c.entries[d.uri] = cachedAnalysis{version: d.version, result: result}
+	c.mu.Unlock()
+	return result
+}
+
+// invalidate drops one document's cached analysis.
+func (c *analysisCache) invalidate(uri string) {
+	c.mu.Lock()
+	delete(c.entries, uri)
+	c.mu.Unlock()
+}
+
+// invalidateAll drops everything, for when the world changed underneath —
+// a configuration change, or a watched file the host resolves through.
+func (c *analysisCache) invalidateAll() {
+	c.mu.Lock()
+	c.entries = make(map[string]cachedAnalysis)
+	c.mu.Unlock()
 }
 
 // analyze parses and resolves a document, then indexes its references.
