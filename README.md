@@ -202,7 +202,7 @@ two dialects pay and the others do not.
 
 ```console
 $ starlsp --dialect bazel --probe
-starlsp 0.2.1
+starlsp 0.3.0
 
 host           starlark+bazel
 parser         starlark (gotreesitter, pure Go)
@@ -296,7 +296,7 @@ go build -tags 'grammar_subset,grammar_subset_starlark' ./cmd/starlsp
 
 ## Status
 
-v0.2.0. The `Host` interface is settled enough to build against; it may still
+v0.3.0. The `Host` interface is settled enough to build against; it may still
 change before 1.0. Dialect hosts for Buck, Isopod, Copybara, or anything else are
 very welcome — they are a table and two methods.
 
