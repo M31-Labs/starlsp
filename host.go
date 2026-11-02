@@ -1,6 +1,8 @@
 package starlsp
 
 import (
+	"sort"
+
 	"go.starlark.net/syntax"
 )
 
@@ -17,6 +19,11 @@ import (
 //
 // The vanilla host in this package implements Host alone, and is what the
 // standalone binary uses when no dialect is configured.
+//
+// The server calls a host from several goroutines at once: read-only requests
+// run concurrently with each other and with the analysis that follows an edit.
+// A host must therefore be safe for concurrent use. The usual way is to build
+// its tables once, behind a sync.Once, and only read them afterwards.
 type Host interface {
 	// Name identifies the dialect in server logs and in the initialize
 	// response, for example "bazel" or "starkite".
@@ -25,6 +32,16 @@ type Host interface {
 	// Globals returns the names the host predeclares, beyond the universe the
 	// Starlark specification defines. The server treats these as defined, so
 	// they are also what stops the resolver reporting them as undefined names.
+	//
+	// A host that composes over NewVanilla also returns the universe names, so
+	// completion and hover can offer them. For resolution the server still
+	// treats every universe name as the universe, not as a name this host
+	// predeclared. See UniverseRemover for a dialect that lacks some of them.
+	//
+	// The server calls Globals once, the first time it needs the names, and keeps
+	// the answer for its lifetime. Completion, hover, resolution and the probe
+	// then agree with each other. A host whose list changes while the server runs
+	// is not supported; start a new Server instead.
 	Globals() []Symbol
 }
 
@@ -213,6 +230,28 @@ func (c composite) FileOptions() *syntax.FileOptions {
 	return nil
 }
 
+// RemovedUniverse is the union of what the members remove. A dialect that lacks
+// a name lacks it however the hosts are ordered, so unlike Globals this does not
+// let a later host undo an earlier one.
+func (c composite) RemovedUniverse() []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, h := range c {
+		r, ok := h.(UniverseRemover)
+		if !ok {
+			continue
+		}
+		for _, name := range r.RemovedUniverse() {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (c composite) Document(owner, name string) (Symbol, bool) {
 	for i := len(c) - 1; i >= 0; i-- {
 		if d, ok := c[i].(Documenter); ok {
@@ -232,6 +271,8 @@ var (
 	_ Linter         = composite(nil)
 	_ Documenter     = composite(nil)
 	_ DialectOptions = composite(nil)
+
+	_ UniverseRemover = composite(nil)
 )
 
 func joinNonEmpty(parts []string, sep string) string {
@@ -259,8 +300,43 @@ func joinNonEmpty(parts []string, sep string) string {
 // server has.
 //
 // A host that does not implement this gets the specification defaults.
+//
+// The Set field decides whether the universe's set builtin exists. With it off,
+// which is the default, a call to set is reported with the message that
+// go.starlark.net gives: "this Starlark dialect does not support sets". The
+// resolver reports it at the first use in a file, not at every use. The server
+// also stops offering set, in completion, hover and the probe, so it does not
+// suggest a name it will then call an error. A dialect that cannot tell whether
+// its runtime has sets should turn the field on: an error on a file the runtime
+// accepts is worse than an error the server misses.
 type DialectOptions interface {
 	FileOptions() *syntax.FileOptions
+}
+
+// A UniverseRemover host runs a dialect whose universe lacks some of the names
+// the Starlark specification defines.
+//
+// The server resolves a universe name as the universe, so a dialect that has
+// the name needs to say nothing. A dialect that does not have it says so here,
+// and the server then reports every use of the name as "undefined", the same
+// message the dialect's runtime gives. It also stops offering the name in
+// completion and hover.
+//
+// Removal is by name. The server drops every entry of Globals under a removed
+// name, including one the host lists itself. It cannot tell such an entry from a
+// copy of the universe's own: a catalog built from a runtime lists every universe
+// name as its own global, so the entry under a removed name is usually that copy.
+// A dialect that replaces a universe function with its own lists the replacement
+// in Globals and does not remove the name; the replacement is then what
+// completion offers.
+//
+// This is for names that are absent from the universe. A name that is present
+// but switched off by FileOptions, such as set, is handled by DialectOptions.
+// Names that are not in the universe, and keywords, are ignored.
+//
+// Hosts(a, b, ...) removes the union of what its members remove.
+type UniverseRemover interface {
+	RemovedUniverse() []string
 }
 
 // SpecFileOptions is the Starlark specification's own dialect: no top-level

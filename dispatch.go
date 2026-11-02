@@ -79,6 +79,10 @@ const maxConcurrentRequests = 16
 // Notifications that mutate a document are handled inline, in arrival order,
 // because their order is their meaning: a didChange that overtook its didOpen
 // would corrupt the buffer. Everything else is read-only and runs concurrently.
+//
+// The two can overlap, and that is safe because of how documents are stored. An
+// edit never changes a Document; it builds the next one and swaps it in. A
+// request takes one Document when it starts and reads only that. See Document.
 func (s *Server) Run() error {
 	defer s.pending.cancelAll()
 

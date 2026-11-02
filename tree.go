@@ -51,12 +51,28 @@ func childByField(n *gotreesitter.Node, field string, fallback int, lang *gotree
 // namedChildrenOfType returns every direct named child with the given type.
 func namedChildrenOfType(n *gotreesitter.Node, typ string, lang *gotreesitter.Language) []*gotreesitter.Node {
 	var out []*gotreesitter.Node
-	if n == nil {
-		return out
+	for _, c := range namedChildren(n) {
+		if c.Type(lang) == typ {
+			out = append(out, c)
+		}
 	}
-	for i := 0; i < n.NamedChildCount(); i++ {
-		c := n.NamedChild(i)
-		if c != nil && c.Type(lang) == typ {
+	return out
+}
+
+// namedChildren returns n's named children in order, reading the children once.
+//
+// Do not loop over NamedChildCount and NamedChild(i) instead. gotreesitter keeps
+// no index of the named children, so each of those calls scans the children from
+// the start, and the loop is quadratic in the number of children. A module with
+// 20,000 top-level statements took five seconds to outline that way.
+func namedChildren(n *gotreesitter.Node) []*gotreesitter.Node {
+	if n == nil {
+		return nil
+	}
+	count := n.ChildCount()
+	out := make([]*gotreesitter.Node, 0, count)
+	for i := 0; i < count; i++ {
+		if c := n.Child(i); c != nil && c.IsNamed() {
 			out = append(out, c)
 		}
 	}
@@ -94,26 +110,21 @@ func nodeAt(root *gotreesitter.Node, offset int) *gotreesitter.Node {
 // documentSymbols builds the outline: every function definition, plus the
 // top-level bindings that make a Starkite script readable at a glance.
 func (s *Server) documentSymbols(d *Document) []DocumentSymbol {
-	tree := d.structureTree(s.lang)
-	if tree == nil {
-		return nil
-	}
-	root := tree.RootNode()
+	// src is d, or the last version of d that had structure. Names and ranges
+	// are read from src, so they agree with src's tree.
+	src := d.structure()
+	root := src.root
 	if root == nil {
 		return nil
 	}
 	var out []DocumentSymbol
-	for i := 0; i < root.NamedChildCount(); i++ {
-		child := root.NamedChild(i)
-		if child == nil {
-			continue
-		}
+	for _, child := range namedChildren(root) {
 		switch child.Type(s.lang) {
 		case ntFuncDef:
-			out = append(out, s.functionSymbol(d, child))
+			out = append(out, s.functionSymbol(src, child))
 		case ntExprStmt:
 			for _, assign := range namedChildrenOfType(child, ntAssignment, s.lang) {
-				if sym, ok := s.assignmentSymbol(d, assign); ok {
+				if sym, ok := s.assignmentSymbol(src, assign); ok {
 					out = append(out, sym)
 				}
 			}
@@ -175,12 +186,15 @@ func (s *Server) assignmentSymbol(d *Document, assign *gotreesitter.Node) (Docum
 
 // foldingRanges folds every suite: function bodies, loops, and conditionals.
 func (s *Server) foldingRanges(d *Document) []FoldingRange {
-	tree := d.structureTree(s.lang)
-	if tree == nil {
+	// Blocks and comments both come from src, so that one reply describes one
+	// version of the buffer: d, or the last version that had structure.
+	src := d.structure()
+	root := src.root
+	if root == nil {
 		return nil
 	}
 	var out []FoldingRange
-	walk(tree.RootNode(), func(n *gotreesitter.Node) bool {
+	walk(root, func(n *gotreesitter.Node) bool {
 		switch n.Type(s.lang) {
 		case ntBlock:
 			start := int(n.StartPoint().Row)
@@ -197,17 +211,17 @@ func (s *Server) foldingRanges(d *Document) []FoldingRange {
 		}
 		return true
 	})
-	out = append(out, s.commentFolds(d)...)
+	out = append(out, s.commentFolds(src)...)
 	return out
 }
 
 // commentFolds groups runs of two or more consecutive comment lines.
 func (s *Server) commentFolds(d *Document) []FoldingRange {
-	if d.tree == nil {
+	if d.root == nil {
 		return nil
 	}
 	var comments []*gotreesitter.Node
-	walk(d.tree.RootNode(), func(n *gotreesitter.Node) bool {
+	walk(d.root, func(n *gotreesitter.Node) bool {
 		if n.Type(s.lang) == ntComment {
 			comments = append(comments, n)
 		}
@@ -238,10 +252,10 @@ func (s *Server) commentFolds(d *Document) []FoldingRange {
 // keeps the editor useful between keystrokes. Nothing here claims a script is
 // semantically wrong; the authoritative pass does that.
 func (s *Server) structuralDiagnostics(d *Document) []Diagnostic {
-	if d.tree == nil {
+	root := d.root
+	if root == nil {
 		return nil
 	}
-	root := d.tree.RootNode()
 	var out []Diagnostic
 
 	// Only report tree-sitter's own error nodes while the buffer does not
@@ -278,7 +292,7 @@ func (s *Server) structuralDiagnostics(d *Document) []Diagnostic {
 // documentLinks turns each load() target into a link. Resolution of the target
 // to a path is the semantic half's job; this half only finds the literals.
 func (s *Server) documentLinks(d *Document) []DocumentLink {
-	if d.tree == nil {
+	if d.root == nil {
 		return nil
 	}
 	var out []DocumentLink
@@ -308,7 +322,7 @@ func (s *Server) documentLinks(d *Document) []DocumentLink {
 // loadCalls returns every load() call expression in the document.
 func (s *Server) loadCalls(d *Document) []*gotreesitter.Node {
 	var out []*gotreesitter.Node
-	walk(d.tree.RootNode(), func(n *gotreesitter.Node) bool {
+	walk(d.root, func(n *gotreesitter.Node) bool {
 		if n.Type(s.lang) != ntCall {
 			return true
 		}
@@ -328,9 +342,8 @@ func (s *Server) loadTargetNode(d *Document, call *gotreesitter.Node) *gotreesit
 	if args == nil {
 		return nil
 	}
-	for i := 0; i < args.NamedChildCount(); i++ {
-		c := args.NamedChild(i)
-		if c != nil && c.Type(s.lang) == ntString {
+	for _, c := range namedChildren(args) {
+		if c.Type(s.lang) == ntString {
 			return c
 		}
 	}
@@ -343,11 +356,7 @@ func stringLiteralText(d *Document, n *gotreesitter.Node, lang *gotreesitter.Lan
 		return ""
 	}
 	var sb strings.Builder
-	for i := 0; i < n.NamedChildCount(); i++ {
-		c := n.NamedChild(i)
-		if c == nil {
-			continue
-		}
+	for _, c := range namedChildren(n) {
 		switch c.Type(lang) {
 		case ntStringStart, ntStringEnd:
 			continue

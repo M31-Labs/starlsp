@@ -37,9 +37,14 @@ func New() *Host { return &Host{} }
 func (h *Host) Name() string { return "bazel" }
 
 // FileOptions gives Bazel's dialect. Bazel does not permit top-level control
-// flow in BUILD files, and does not enable the set builtin.
+// flow in BUILD files.
+//
+// It accepts the set builtin. Whether a file may call set() depends on the Bazel
+// release and its flags, and this host cannot see either. A server that reports
+// an error on a file Bazel accepts is worse than one that misses an error Bazel
+// would give, so set() is not reported.
 func (h *Host) FileOptions() *syntax.FileOptions {
-	return &syntax.FileOptions{}
+	return &syntax.FileOptions{Set: true}
 }
 
 func (h *Host) Globals() []starlsp.Symbol {

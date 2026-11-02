@@ -40,7 +40,7 @@ func (s *Server) complete(d *Document, pos Position) completionList {
 		return completionList{Items: items}
 	}
 
-	for _, sym := range s.host.Globals() {
+	for _, sym := range s.visibleGlobals() {
 		items = append(items, completionItemFor(sym))
 	}
 	items = append(items, s.documentLocals(d)...)
@@ -99,10 +99,10 @@ func completionItemFor(sym Symbol) CompletionItem {
 
 func (s *Server) hover(d *Document, pos Position) *hoverResult {
 	offset := d.offsetOf(pos)
-	if d.tree == nil {
+	if d.root == nil {
 		return nil
 	}
-	node := nodeAt(d.tree.RootNode(), offset)
+	node := nodeAt(d.root, offset)
 	if node == nil || node.Type(s.lang) != ntIdentifier {
 		return nil
 	}
@@ -250,7 +250,7 @@ func (s *Server) definition(d *Document, pos Position) []Location {
 
 // loadTargetAt reports the file a load() string under the caret refers to.
 func (s *Server) loadTargetAt(d *Document, offset int) (Location, bool) {
-	if d.tree == nil || s.caps.loads == nil {
+	if d.root == nil || s.caps.loads == nil {
 		return Location{}, false
 	}
 	for _, call := range s.loadCalls(d) {
@@ -374,13 +374,13 @@ func (s *Server) handleSelectionRange(req request) error {
 		return s.conn.replyError(req.ID, errInvalidParams, err.Error())
 	}
 	d, ok := s.docs.get(params.TextDocument.URI)
-	if !ok || d.tree == nil {
+	if !ok || d.root == nil {
 		return s.conn.reply(req.ID, []SelectionRange{})
 	}
 
 	out := make([]SelectionRange, 0, len(params.Positions))
 	for _, pos := range params.Positions {
-		node := nodeAt(d.tree.RootNode(), d.offsetOf(pos))
+		node := nodeAt(d.root, d.offsetOf(pos))
 		var chain []Range
 		for n := node; n != nil; n = n.Parent() {
 			if !n.IsNamed() {
@@ -441,6 +441,15 @@ func (s *Server) handleWorkspaceSymbol(ctx context.Context, req request) error {
 		}
 	}
 
+	scanned := false
+	defer func() {
+		if scanned {
+			// Each file's tree went back to gotreesitter's pool for the next file
+			// to reuse. Give what is left to the garbage collector, so an idle
+			// server does not hold the arenas of the largest files it scanned.
+			gotreesitter.DrainArenaPools()
+		}
+	}()
 	for _, path := range s.workspaceFiles() {
 		if checkCancelled(ctx) {
 			// The user typed again; this answer is already stale.
@@ -454,10 +463,11 @@ func (s *Server) handleWorkspaceSymbol(ctx context.Context, req request) error {
 		if err != nil {
 			continue
 		}
-		scratch := &Document{uri: uri, path: path, text: source}
-		scratch.indexLines()
-		s.docs.reparse(scratch)
-		for _, sym := range s.documentSymbols(scratch) {
+		scanned = true
+		scratch := s.docs.snapshot(uri, 0, source)
+		symbols := s.documentSymbols(scratch)
+		scratch.release() // nothing else holds it; the next file reuses its memory
+		for _, sym := range symbols {
 			if !matchesQuery(sym.Name, query) {
 				continue
 			}
@@ -527,13 +537,16 @@ func sortLocations(locs []Location) {
 // dialect namespace reads as a namespace and a dialect member reads as a
 // method — a distinction a generic Starlark highlighter cannot make.
 func (s *Server) semanticTokensFor(d *Document) semanticTokens {
-	if d.tree == nil {
+	if d.root == nil {
 		return semanticTokens{Data: []uint32{}}
 	}
 	type token struct{ line, col, length, kind int }
 	var tokens []token
 
-	walk(d.tree.RootNode(), func(n *gotreesitter.Node) bool {
+	// Tree-sitter counts columns in bytes and LSP counts them in UTF-16 units.
+	columns := newColumnConverter(d)
+
+	walk(d.root, func(n *gotreesitter.Node) bool {
 		if !n.IsNamed() {
 			return true
 		}
@@ -555,9 +568,11 @@ func (s *Server) semanticTokensFor(d *Document) semanticTokens {
 		if start.Row != end.Row {
 			return true // a multi-line token cannot be one entry
 		}
+		row := int(start.Row)
+		col := columns.column(row, int(start.Column))
 		tokens = append(tokens, token{
-			line: int(start.Row), col: int(start.Column),
-			length: int(end.Column - start.Column), kind: kind,
+			line: row, col: col,
+			length: columns.column(row, int(end.Column)) - col, kind: kind,
 		})
 		return true
 	})

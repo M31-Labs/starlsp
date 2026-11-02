@@ -58,7 +58,7 @@ func (s *Server) contextAt(d *Document, offset int) cursorContext {
 
 	ctx.Prefix, ctx.Receiver, ctx.AfterDot = splitReceiver(string(before))
 
-	if d.tree != nil {
+	if d.root != nil {
 		ctx.Call, ctx.ArgIndex = s.enclosingCall(d, offset)
 	}
 	return ctx
@@ -190,7 +190,7 @@ func (s *Server) enclosingCall(d *Document, offset int) (*gotreesitter.Node, int
 		bestCall *gotreesitter.Node
 		bestArgs *gotreesitter.Node
 	)
-	walk(d.tree.RootNode(), func(n *gotreesitter.Node) bool {
+	walk(d.root, func(n *gotreesitter.Node) bool {
 		if int(n.StartByte()) > offset || int(n.EndByte()) < offset {
 			return false
 		}
@@ -343,11 +343,11 @@ func isIdentifier(s string) bool {
 
 // bindingExpression finds the right-hand side of the last assignment to name.
 func (s *Server) bindingExpression(d *Document, name string) (string, bool) {
-	if d.tree == nil {
+	if d.root == nil {
 		return "", false
 	}
 	var found string
-	walk(d.tree.RootNode(), func(n *gotreesitter.Node) bool {
+	walk(d.root, func(n *gotreesitter.Node) bool {
 		if n.Type(s.lang) != ntAssignment {
 			return true
 		}

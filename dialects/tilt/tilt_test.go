@@ -39,3 +39,20 @@ func TestTiltSurfaceCoversWhatRealTiltfilesUse(t *testing.T) {
 		t.Error("k8s_yaml has no documentation")
 	}
 }
+
+// This host cannot tell whether the Tilt a Tiltfile will run under has sets,
+// and an error on a file that Tilt accepts is worse than a missed error, so it
+// accepts set(). It is the same choice the Bazel host makes.
+func TestTiltDoesNotReportSet(t *testing.T) {
+	if !tilt.New().FileOptions().Set {
+		t.Error("the Tilt dialect switches sets off, so every use of set() is reported")
+	}
+
+	srv, err := starlsp.New(starlsp.Options{Host: starlsp.Hosts(starlsp.NewVanilla(), tilt.New())})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, d := range srv.Diagnose("/tmp/starlsp-test/Tiltfile", "images = set(['a', 'b'])\nif 'a' in images:\n    print('a')\n") {
+		t.Errorf("set() in a Tiltfile got a diagnostic: %s", d.Message)
+	}
+}

@@ -12,7 +12,8 @@ VERSION  := $(shell sed -n 's/^const Version = "\(.*\)"$$/\1/p' server.go)
 EXT_DIR  := editors/vscode
 VSIX     := $(EXT_DIR)/starlsp-$(VERSION).vsix
 
-# The subset tags embed only the Starlark grammar: 31.6 MB -> 12.9 MB.
+# The subset tags embed only the Starlark grammar, which makes the binary much
+# smaller. The README has the sizes.
 LEAN_TAGS := grammar_subset,grammar_subset_starlark
 
 .PHONY: all
