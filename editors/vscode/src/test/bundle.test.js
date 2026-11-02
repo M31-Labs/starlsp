@@ -23,6 +23,7 @@ const Module = require("module");
 
 const ROOT = path.resolve(__dirname, "../..");
 const BUNDLE = path.join(ROOT, "dist", "extension.js");
+const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 
 /** A stand-in for the editor's `vscode` module.
  *
@@ -158,9 +159,12 @@ check("the packaged vsix carries the bundle and no src/", () => {
 });
 
 check("the installed copy, if present, is the bundled one", () => {
+  // The folder name is publisher.name-version, so it follows package.json and
+  // needs no edit when the version changes.
   const installed = path.join(
     process.env.HOME,
-    ".vscode-server/extensions/m31labs.starlsp-0.2.0"
+    ".vscode-server/extensions",
+    `${PKG.publisher}.${PKG.name}-${PKG.version}`
   );
   if (!fs.existsSync(installed)) {
     console.log("       (extension not installed in a WSL remote; skipping)");

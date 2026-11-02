@@ -34,11 +34,16 @@ func New() *Host { return &Host{} }
 func (h *Host) Name() string { return "tilt" }
 
 // FileOptions permits the top-level control flow Tiltfiles actually use.
+//
+// It also accepts the set builtin. This host cannot tell whether the Tilt that
+// runs a Tiltfile has sets, and a server that reports an error on a file Tilt
+// accepts is worse than one that misses an error Tilt would give.
 func (h *Host) FileOptions() *syntax.FileOptions {
 	return &syntax.FileOptions{
 		TopLevelControl: true,
 		While:           true,
 		GlobalReassign:  true,
+		Set:             true,
 	}
 }
 

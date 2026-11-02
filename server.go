@@ -16,7 +16,7 @@ import (
 )
 
 // Version is reported to the client at initialize.
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // Options configures a server.
 type Options struct {
@@ -49,8 +49,18 @@ type Server struct {
 
 	analyses analysisCache
 
-	globalOnce sync.Once
-	globals    map[string]Symbol
+	// removed holds the universe names the host says its dialect lacks. It is
+	// set in New and never changes.
+	removed map[string]bool
+
+	// globalList and globals are the host's global names, less the universe names
+	// the dialect lacks (removed) or switches off (see switchedOff). The server
+	// asks the host for its globals once, on first use, and keeps the answer.
+	// switchedOffNames are the names of the second kind that the host did list.
+	globalOnce       sync.Once
+	globalList       []Symbol
+	globals          map[string]Symbol
+	switchedOffNames []string
 
 	rootPath string
 
@@ -88,28 +98,78 @@ func New(opts Options) (*Server, error) {
 		return nil, errors.New("starlsp: the starlark grammar failed to load")
 	}
 
-	return &Server{
+	s := &Server{
 		opts:    opts,
 		host:    opts.Host,
 		caps:    capabilitiesOf(opts.Host),
 		conn:    newConn(opts.In, opts.Out),
-		docs:    newDocumentStore(lang),
 		lang:    lang,
+		removed: removedUniverseOf(opts.Host),
 		pending: newInflight(),
 		slots:   make(chan struct{}, maxConcurrentRequests),
-	}, nil
+	}
+	s.docs = newDocumentStore(lang, s.logf)
+	return s, nil
+}
+
+// removedUniverseOf collects the universe names a host says its dialect lacks.
+// Names that are not in the universe are ignored: a host cannot remove another
+// host's names, and a keyword is part of the syntax, not the universe.
+func removedUniverseOf(h Host) map[string]bool {
+	r, ok := h.(UniverseRemover)
+	if !ok {
+		return nil
+	}
+	var out map[string]bool
+	for _, name := range r.RemovedUniverse() {
+		if !universeNames[name] {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]bool)
+		}
+		out[name] = true
+	}
+	return out
 }
 
 // globalIndex returns the host's global names, keyed for lookup.
 func (s *Server) globalIndex() map[string]Symbol {
+	s.buildGlobals()
+	return s.globals
+}
+
+// visibleGlobals returns the host's global names in the host's order, without
+// the universe names the dialect lacks. Completion, hover, and the probe all
+// read it, so a name that the dialect does not have is offered nowhere.
+func (s *Server) visibleGlobals() []Symbol {
+	s.buildGlobals()
+	return s.globalList
+}
+
+func (s *Server) buildGlobals() {
 	s.globalOnce.Do(func() {
 		symbols := s.host.Globals()
+		opts := s.fileOptions()
+		s.globalList = make([]Symbol, 0, len(symbols))
 		s.globals = make(map[string]Symbol, len(symbols))
 		for _, sym := range symbols {
+			// Both tests are by name. A host that lists a universe name itself
+			// loses that entry too: a catalog built from a runtime lists every
+			// universe name as its own, so an entry under one of these names is
+			// usually a copy of the universe's.
+			if s.removed[sym.Name] {
+				continue
+			}
+			if switchedOff(opts, sym.Name) {
+				s.switchedOffNames = append(s.switchedOffNames, sym.Name)
+				continue
+			}
+			s.globalList = append(s.globalList, sym)
 			s.globals[sym.Name] = sym
 		}
+		sort.Strings(s.switchedOffNames)
 	})
-	return s.globals
 }
 
 // lookupSymbol finds a symbol by owner and name, consulting the host's
@@ -368,8 +428,11 @@ func (s *Server) publishDiagnostics(d *Document) {
 // because two parsers reporting one error twice is worse than one reporting it
 // once.
 func (s *Server) diagnosticsFor(d *Document) []Diagnostic {
-	a := s.analyze(d)
+	return s.diagnosticsWith(d, s.analyze(d))
+}
 
+// diagnosticsWith is diagnosticsFor for a caller that already has the analysis.
+func (s *Server) diagnosticsWith(d *Document, a analysis) []Diagnostic {
 	out := append([]Diagnostic(nil), a.Diagnostics...)
 	if a.File == nil {
 		for _, diag := range s.structuralDiagnostics(d) {
@@ -407,7 +470,7 @@ func dedupeDiagnostics(in []Diagnostic) []Diagnostic {
 // missing completion can see exactly which names and owners the configured
 // host exposes, rather than inferring it from an editor.
 func (s *Server) Probe() string {
-	globals := s.host.Globals()
+	globals := s.visibleGlobals()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "starlsp %s\n\n", Version)
@@ -435,7 +498,19 @@ func (s *Server) Probe() string {
 	if len(hooks) == 0 {
 		hooks = append(hooks, "(none beyond Globals)")
 	}
-	fmt.Fprintf(&b, "%s\n\n", strings.Join(hooks, ", "))
+	fmt.Fprintf(&b, "%s\n", strings.Join(hooks, ", "))
+	if len(s.switchedOffNames) > 0 {
+		fmt.Fprintf(&b, "switched off   %s\n", strings.Join(s.switchedOffNames, " "))
+	}
+	if len(s.removed) > 0 {
+		removed := make([]string, 0, len(s.removed))
+		for name := range s.removed {
+			removed = append(removed, name)
+		}
+		sort.Strings(removed)
+		fmt.Fprintf(&b, "removed        %s\n", strings.Join(removed, " "))
+	}
+	fmt.Fprintf(&b, "\n")
 
 	byKind := make(map[Kind][]string)
 	for _, sym := range globals {
@@ -465,12 +540,17 @@ func (s *Server) probeOwners() []string {
 	seen := map[string]bool{}
 	var owners []string
 	for _, name := range []string{"string", "list", "dict", "set", "bytes"} {
+		// The set builtin is the only way to make a set, so a dialect without it
+		// has no sets to complete. The other types have literals.
+		if name == "set" && (s.removed["set"] || switchedOff(s.fileOptions(), "set")) {
+			continue
+		}
 		if len(s.caps.members.Members(name)) > 0 {
 			seen[name] = true
 			owners = append(owners, name)
 		}
 	}
-	for _, sym := range s.host.Globals() {
+	for _, sym := range s.visibleGlobals() {
 		if sym.Kind != KindNamespace || seen[sym.Name] {
 			continue
 		}
@@ -511,13 +591,19 @@ func kindLabel(k Kind) string {
 //
 // uri may be a file:// URI or a plain path. It is used for error messages and
 // for any host hook that resolves relative to the file.
+//
+// The text is analysed on its own. It is not opened, so it does not replace or
+// close a buffer that Run has open under the same URI.
 func (s *Server) Diagnose(uri, text string) []Diagnostic {
 	if !strings.HasPrefix(uri, "file://") && strings.HasPrefix(uri, "/") {
 		uri = pathToURI(uri)
 	}
-	d := s.docs.open(uri, 1, text)
-	defer s.docs.close(uri)
-	out := s.diagnosticsFor(d)
+	// The document is never opened. Diagnose may run beside a live session, and
+	// opening it would replace, and then close, a buffer an editor has open
+	// under the same URI. Nor does it go through the analysis cache: a lint run
+	// over thousands of files would only churn it.
+	d := s.docs.snapshot(uri, 1, []byte(text))
+	out := s.diagnosticsWith(d, s.analyzeUncached(d))
 	if out == nil {
 		return []Diagnostic{}
 	}

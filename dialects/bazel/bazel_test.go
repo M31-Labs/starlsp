@@ -1,6 +1,7 @@
 package bazel_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/M31-Labs/starlsp"
@@ -55,5 +56,27 @@ func TestAttrMembersComplete(t *testing.T) {
 func TestBazelForbidsTopLevelControl(t *testing.T) {
 	if bazel.New().FileOptions().TopLevelControl {
 		t.Error("Bazel does not permit top-level control flow; the dialect says it does")
+	}
+}
+
+// A language server can tell which Bazel a file will run under no better than a
+// guess, and Bazel's Starlark has gained a set type in recent releases. The host
+// accepts set(), because an error on a file that its own runtime accepts is the
+// worst thing a language server can say. The cost is a missed error under a
+// Bazel that lacks sets, which is what this server did before it checked.
+func TestBazelDoesNotReportSet(t *testing.T) {
+	if !bazel.New().FileOptions().Set {
+		t.Error("the Bazel dialect switches sets off, so every use of set() is reported")
+	}
+
+	srv, err := starlsp.New(starlsp.Options{Host: starlsp.Hosts(starlsp.NewVanilla(), bazel.New())})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, d := range srv.Diagnose("/tmp/starlsp-test/sets.bzl", "def _impl(ctx):\n    return set(ctx.attr.srcs)\n") {
+		t.Errorf("set() in a .bzl file got a diagnostic: %s", d.Message)
+	}
+	if !strings.Contains(srv.Probe(), " set ") {
+		t.Errorf("the probe no longer lists set:\n%s", srv.Probe())
 	}
 }

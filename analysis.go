@@ -55,14 +55,33 @@ type referenceIndex struct {
 // single-entry cache is worse than none once two files are open: every switch
 // between them evicts the other, so the common case — alternating between a
 // rule file and the BUILD file that uses it — would never hit.
+//
+// An entry remembers which Document it was computed from, by the Document's seq,
+// and answers only a request for that Document. A version number is not enough:
+// a client may reuse one, and a request that is slow to finish could store its
+// result after a newer version had been published, and the cache would then
+// serve the old text's analysis for the new text.
+//
+// An entry does not hold the Document. A Document owns a parse tree, which is
+// megabytes, and the analysis needs none of it. Holding only the seq means the
+// cache keeps an analysis alive and nothing else.
+//
+// A result is stored only for the version the store holds at that moment. A
+// request that read a Document and then lost the race with an edit or a close is
+// answered, but nobody will ask the cache for its version again.
 type analysisCache struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+
+	// gen counts invalidations. A result computed before one is not stored
+	// after it, because the world it was computed in has changed.
+	gen uint64
+
 	entries map[string]cachedAnalysis
 }
 
 type cachedAnalysis struct {
-	version int
-	result  analysis
+	seq    uint64
+	result analysis
 }
 
 // maxCachedAnalyses bounds the cache. Entries are evicted on didClose, so this
@@ -70,12 +89,16 @@ type cachedAnalysis struct {
 // keeps that bounded rather than unbounded.
 const maxCachedAnalyses = 64
 
-func (c *analysisCache) get(d *Document, compute func() analysis) analysis {
+// get returns the analysis of d, computing it if the cache has none. current
+// reports whether d is still the version the store holds; it is called with the
+// cache locked, so it must not call back into the cache.
+func (c *analysisCache) get(d *Document, current func() bool, compute func() analysis) analysis {
 	c.mu.Lock()
-	if entry, ok := c.entries[d.uri]; ok && entry.version == d.version && entry.result.Refs != nil {
+	if entry, ok := c.entries[d.uri]; ok && entry.seq == d.seq && entry.result.Refs != nil {
 		c.mu.Unlock()
 		return entry.result
 	}
+	gen := c.gen
 	c.mu.Unlock()
 
 	// Computed outside the lock: parsing a large file must not block another
@@ -83,6 +106,10 @@ func (c *analysisCache) get(d *Document, compute func() analysis) analysis {
 	result := compute()
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen || !current() {
+		return result // right for this caller's Document, but not worth keeping
+	}
 	if c.entries == nil {
 		c.entries = make(map[string]cachedAnalysis)
 	}
@@ -92,14 +119,14 @@ func (c *analysisCache) get(d *Document, compute func() analysis) analysis {
 			break
 		}
 	}
-	c.entries[d.uri] = cachedAnalysis{version: d.version, result: result}
-	c.mu.Unlock()
+	c.entries[d.uri] = cachedAnalysis{seq: d.seq, result: result}
 	return result
 }
 
 // invalidate drops one document's cached analysis.
 func (c *analysisCache) invalidate(uri string) {
 	c.mu.Lock()
+	c.gen++
 	delete(c.entries, uri)
 	c.mu.Unlock()
 }
@@ -108,13 +135,16 @@ func (c *analysisCache) invalidate(uri string) {
 // a configuration change, or a watched file the host resolves through.
 func (c *analysisCache) invalidateAll() {
 	c.mu.Lock()
+	c.gen++
 	c.entries = make(map[string]cachedAnalysis)
 	c.mu.Unlock()
 }
 
 // analyze parses and resolves a document, then indexes its references.
 func (s *Server) analyze(d *Document) analysis {
-	return s.analyses.get(d, func() analysis { return s.analyzeUncached(d) })
+	return s.analyses.get(d,
+		func() bool { return s.docs.isCurrent(d) },
+		func() analysis { return s.analyzeUncached(d) })
 }
 
 func (s *Server) analyzeUncached(d *Document) analysis {
@@ -130,11 +160,22 @@ func (s *Server) analyzeUncached(d *Document) analysis {
 
 	// Resolution needs to know which names the host provides, so that a
 	// dialect builtin is not reported as undefined.
+	//
+	// The two predicates are not interchangeable. The resolver asks isPredeclared
+	// first, and only a name that is not predeclared reaches isUniversal, which
+	// is where it enforces the dialect's own switches: a universe name `set` is
+	// refused unless FileOptions.Set is on. Reporting a universe name as
+	// predeclared skips that check, and a dialect that does not have the name
+	// then gets no diagnostic for it. So the universe is answered as the
+	// universe, and only the names beyond it count as predeclared.
 	isPredeclared := func(name string) bool {
+		if universeNames[name] {
+			return false
+		}
 		_, ok := s.globalIndex()[name]
 		return ok
 	}
-	isUniversal := func(name string) bool { return universeNames[name] }
+	isUniversal := func(name string) bool { return universeNames[name] && !s.removed[name] }
 
 	// The resolver reads its dialect from the file's own options, which the
 	// parse above attached.
@@ -346,6 +387,14 @@ var universeNames = func() map[string]bool {
 	}
 	return out
 }()
+
+// switchedOff reports whether a dialect's file options turn off a name that the
+// universe defines. The resolver refuses such a name when it is used, so the
+// server does not offer it either: a completion that the diagnostics then call an
+// error would be the server contradicting itself. Only set is gated this way.
+func switchedOff(opts *syntax.FileOptions, name string) bool {
+	return name == "set" && !opts.Set
+}
 
 // fileOptions returns the dialect the configured host asks for, or the
 // specification defaults when it asks for nothing.

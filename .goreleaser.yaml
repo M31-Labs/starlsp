@@ -1,5 +1,6 @@
 # Prebuilt binaries, so installing does not require a Go toolchain.
-# The grammar_subset tags embed only the Starlark grammar: 31.6 MB -> 12.9 MB.
+# The grammar_subset tags embed only the Starlark grammar, which makes the binary
+# much smaller. The README has the sizes.
 version: 2
 
 before:
